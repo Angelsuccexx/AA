@@ -1,0 +1,9 @@
+{
+  "name": "angelsuccess-cybersecurity",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "mkdir -p public && cp -r templates/* public/ 2>/dev/null || true"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
