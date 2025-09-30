@@ -1,25 +1,12 @@
 services:
   - type: web
-    name: angelsuccess-cybersecurity
-    env: python
+    name: cybersecurity-dashboard
+    runtime: python
     plan: free
-    region: oregon  # or virginia, ohio, frankfurt, singapore
-    buildCommand: |-
-      pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: SECRET_KEY
         generateValue: true
       - key: JWT_SECRET
         generateValue: true
-      - key: PYTHON_VERSION
-        value: 3.11.0
-    healthCheckPath: /api/system-status
-    autoDeploy: true
-
-databases:
-  - name: angelsuccess-db
-    plan: free
-    region: oregon
-    databaseName: angelsuccess
-    user: angelsuccess_user
