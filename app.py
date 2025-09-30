@@ -14,8 +14,8 @@ from collections import deque
 import logging
 import os
 import sys
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'angelsuccess-cybersecurity-2025-secret-key')
@@ -68,7 +68,7 @@ system_state = {
     'threat_intelligence_sources': 15
 }
 
-# PostgreSQL connection function
+# PostgreSQL connection function with psycopg3
 def get_db_connection():
     """Get PostgreSQL database connection"""
     try:
@@ -80,19 +80,16 @@ def get_db_connection():
             if database_url.startswith('postgres://'):
                 database_url = database_url.replace('postgres://', 'postgresql://', 1)
             
-            conn = psycopg2.connect(
+            conn = psycopg.connect(
                 database_url,
-                cursor_factory=RealDictCursor
+                row_factory=dict_row
             )
             return conn
         else:
             # Fallback for local development
-            conn = psycopg2.connect(
-                host='localhost',
-                database='cybersecurity',
-                user='postgres',
-                password='password',
-                cursor_factory=RealDictCursor
+            conn = psycopg.connect(
+                "host=localhost dbname=cybersecurity user=postgres password=password",
+                row_factory=dict_row
             )
             return conn
     except Exception as e:
@@ -107,34 +104,32 @@ def init_db():
         return
     
     try:
-        cur = conn.cursor()
-        
         # Create users table
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                full_name TEXT NOT NULL,
-                email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                plan TEXT DEFAULT 'free',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Check if test user exists
-        cur.execute('SELECT COUNT(*) FROM users WHERE email = %s', ('test@example.com',))
-        user_count = cur.fetchone()['count']
-        
-        if user_count == 0:
-            hashed_password = hash_password('password123')
-            cur.execute(
-                'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
-                ('Test User', 'test@example.com', hashed_password)
-            )
-            print("✅ Created default test user: test@example.com / password123")
+        with conn.cursor() as cur:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    full_name TEXT NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    plan TEXT DEFAULT 'free',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Check if test user exists
+            cur.execute('SELECT COUNT(*) FROM users WHERE email = %s', ('test@example.com',))
+            user_count = cur.fetchone()['count']
+            
+            if user_count == 0:
+                hashed_password = hash_password('password123')
+                cur.execute(
+                    'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
+                    ('Test User', 'test@example.com', hashed_password)
+                )
+                print("✅ Created default test user: test@example.com / password123")
         
         conn.commit()
-        cur.close()
         conn.close()
         
     except Exception as e:
@@ -499,19 +494,18 @@ def free_access():
         if not conn:
             return redirect(url_for('auth_page'))
             
-        cur = conn.cursor()
+        with conn.cursor() as cur:
+            # Generate unique email for free user
+            free_email = f"free_user_{int(time.time())}@angelsuccess.com"
+            hashed_password = hash_password("free_access_2025")
+            
+            cur.execute(
+                'INSERT INTO users (full_name, email, password, plan) VALUES (%s, %s, %s, %s) RETURNING id',
+                ("Free User", free_email, hashed_password, "free")
+            )
+            user_id = cur.fetchone()['id']
+            conn.commit()
         
-        # Generate unique email for free user
-        free_email = f"free_user_{int(time.time())}@angelsuccess.com"
-        hashed_password = hash_password("free_access_2025")
-        
-        cur.execute(
-            'INSERT INTO users (full_name, email, password, plan) VALUES (%s, %s, %s, %s)',
-            ("Free User", free_email, hashed_password, "free")
-        )
-        user_id = cur.fetchone()['id']
-        conn.commit()
-        cur.close()
         conn.close()
         
         token = generate_token(user_id)
@@ -544,17 +538,14 @@ def register():
         if not conn:
             return jsonify({'success': False, 'message': 'Database connection failed'}), 500
             
-        cur = conn.cursor()
-        
         try:
-            cur.execute(
-                'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
-                (full_name, email, hashed_password)
-            )
-            conn.commit()
-            user_id = cur.fetchone()['id']
-            cur.close()
-            conn.close()
+            with conn.cursor() as cur:
+                cur.execute(
+                    'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s) RETURNING id',
+                    (full_name, email, hashed_password)
+                )
+                user_id = cur.fetchone()['id']
+                conn.commit()
             
             token = generate_token(user_id)
             session['token'] = token
@@ -563,10 +554,10 @@ def register():
                 'message': 'Registration successful',
                 'token': token
             })
-        except psycopg2.IntegrityError:
-            cur.close()
-            conn.close()
+        except psycopg.IntegrityError:
             return jsonify({'success': False, 'message': 'Email already exists'}), 400
+        finally:
+            conn.close()
             
     except Exception as e:
         logger.error(f"Registration error: {e}")
@@ -587,10 +578,10 @@ def login():
         if not conn:
             return jsonify({'success': False, 'message': 'Database connection failed'}), 500
             
-        cur = conn.cursor()
-        cur.execute('SELECT id, password, full_name FROM users WHERE email = %s', (email,))
-        user = cur.fetchone()
-        cur.close()
+        with conn.cursor() as cur:
+            cur.execute('SELECT id, password, full_name FROM users WHERE email = %s', (email,))
+            user = cur.fetchone()
+        
         conn.close()
         
         if user:
@@ -773,26 +764,22 @@ def create_test_user():
         if not conn:
             return jsonify({'success': False, 'message': 'Database connection failed'})
             
-        cur = conn.cursor()
+        with conn.cursor() as cur:
+            # Check if test user already exists
+            cur.execute('SELECT id FROM users WHERE email = %s', ('test@example.com',))
+            existing_user = cur.fetchone()
+            
+            if existing_user:
+                return jsonify({'success': True, 'message': 'Test user already exists'})
+            
+            # Create test user
+            hashed_password = hash_password('password123')
+            cur.execute(
+                'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s) RETURNING id',
+                ('Test User', 'test@example.com', hashed_password)
+            )
+            conn.commit()
         
-        # Check if test user already exists
-        cur.execute('SELECT id FROM users WHERE email = %s', ('test@example.com',))
-        existing_user = cur.fetchone()
-        
-        if existing_user:
-            cur.close()
-            conn.close()
-            return jsonify({'success': True, 'message': 'Test user already exists'})
-        
-        # Create test user
-        hashed_password = hash_password('password123')
-        cur.execute(
-            'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
-            ('Test User', 'test@example.com', hashed_password)
-        )
-        conn.commit()
-        user_id = cur.fetchone()['id']
-        cur.close()
         conn.close()
         
         return jsonify({
@@ -816,10 +803,10 @@ def debug_users():
         if not conn:
             return jsonify({'success': False, 'error': 'Database connection failed'})
             
-        cur = conn.cursor()
-        cur.execute('SELECT id, full_name, email, plan FROM users')
-        users = cur.fetchall()
-        cur.close()
+        with conn.cursor() as cur:
+            cur.execute('SELECT id, full_name, email, plan FROM users')
+            users = cur.fetchall()
+        
         conn.close()
         
         user_list = []
