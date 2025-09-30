@@ -17,6 +17,31 @@ import sys
 import psycopg
 from psycopg.rows import dict_row
 
+def get_db_connection():
+    """Get PostgreSQL database connection"""
+    try:
+        database_url = os.environ.get('DATABASE_URL')
+        
+        if database_url:
+            if database_url.startswith('postgres://'):
+                database_url = database_url.replace('postgres://', 'postgresql://', 1)
+            
+            conn = psycopg.connect(
+                database_url,
+                row_factory=dict_row
+            )
+            return conn
+        else:
+            # Fallback for local development
+            conn = psycopg.connect(
+                "host=localhost dbname=cybersecurity user=postgres password=password",
+                row_factory=dict_row
+            )
+            return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        return None
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'angelsuccess-cybersecurity-2025-secret-key')
 app.config['JWT_SECRET'] = os.environ.get('JWT_SECRET', 'angelsuccess-jwt-secret-2025')
