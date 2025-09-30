@@ -15,6 +15,22 @@ from collections import deque
 import logging
 import os
 import sys
+import os
+from flask import Flask
+import psycopg2
+
+app = Flask(__name__)
+
+# Load database URL from Railway environment variable
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Example: connect (for testing only, use SQLAlchemy for production)
+conn = psycopg2.connect(DATABASE_URL)
+
+@app.route("/")
+def home():
+    return "Connected to PostgreSQL on Railway!"
+
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'angelsuccess-cybersecurity-2025-secret-key')
