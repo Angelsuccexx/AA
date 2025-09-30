@@ -14,22 +14,12 @@ from datetime import datetime, timedelta
 from collections import deque
 import logging
 import os
-import sys
-import os
-from flask import Flask
-import psycopg2
+import sysimport
 
-app = Flask(__name__)
-
-# Load database URL from Railway environment variable
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Example: connect (for testing only, use SQLAlchemy for production)
-conn = psycopg2.connect(DATABASE_URL)
-
-@app.route("/")
-def home():
-    return "Connected to PostgreSQL on Railway!"
+app.config['SQLALCHEMY_DATABASE_URI'] = (
+    f"postgresql://{os.getenv('PGUSER')}:{os.getenv('POSTGRES_PASSWORD')}@"
+    f"{os.getenv('RAILWAY_PRIVATE_DOMAIN')}:{os.getenv('PGPORT')}/{os.getenv('PGDATABASE')}"
+)
 
 
 app = Flask(__name__)
