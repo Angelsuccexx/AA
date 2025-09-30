@@ -1,6 +1,5 @@
 # app.py
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-import sqlite3
 import json
 import time
 import threading
@@ -14,13 +13,9 @@ from datetime import datetime, timedelta
 from collections import deque
 import logging
 import os
-import sysimport
-
-app.config['SQLALCHEMY_DATABASE_URI'] = (
-    f"postgresql://{os.getenv('PGUSER')}:{os.getenv('POSTGRES_PASSWORD')}@"
-    f"{os.getenv('RAILWAY_PRIVATE_DOMAIN')}:{os.getenv('PGPORT')}/{os.getenv('PGDATABASE')}"
-)
-
+import sys
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'angelsuccess-cybersecurity-2025-secret-key')
@@ -73,42 +68,79 @@ system_state = {
     'threat_intelligence_sources': 15
 }
 
-# Database setup with Railway-compatible path
-def get_db_path():
-    if 'RAILWAY_VOLUME_MOUNT_PATH' in os.environ:
-        return os.path.join(os.environ['RAILWAY_VOLUME_MOUNT_PATH'], 'users.db')
-    else:
-        return 'users.db'
+# PostgreSQL connection function
+def get_db_connection():
+    """Get PostgreSQL database connection"""
+    try:
+        # Railway provides DATABASE_URL environment variable
+        database_url = os.environ.get('DATABASE_URL')
+        
+        if database_url:
+            # Parse the database URL
+            if database_url.startswith('postgres://'):
+                database_url = database_url.replace('postgres://', 'postgresql://', 1)
+            
+            conn = psycopg2.connect(
+                database_url,
+                cursor_factory=RealDictCursor
+            )
+            return conn
+        else:
+            # Fallback for local development
+            conn = psycopg2.connect(
+                host='localhost',
+                database='cybersecurity',
+                user='postgres',
+                password='password',
+                cursor_factory=RealDictCursor
+            )
+            return conn
+    except Exception as e:
+        logger.error(f"Database connection error: {e}")
+        return None
 
 def init_db():
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            full_name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            plan TEXT DEFAULT 'free',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    """Initialize PostgreSQL database"""
+    conn = get_db_connection()
+    if not conn:
+        logger.error("Failed to connect to database")
+        return
     
-    # Create a default test user if no users exist
-    c.execute('SELECT COUNT(*) FROM users')
-    user_count = c.fetchone()[0]
-    
-    if user_count == 0:
-        hashed_password = hash_password('password123')
-        c.execute(
-            'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
-            ('Test User', 'test@example.com', hashed_password)
-        )
-        print("✅ Created default test user: test@example.com / password123")
-    
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        
+        # Create users table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                full_name TEXT NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                plan TEXT DEFAULT 'free',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Check if test user exists
+        cur.execute('SELECT COUNT(*) FROM users WHERE email = %s', ('test@example.com',))
+        user_count = cur.fetchone()['count']
+        
+        if user_count == 0:
+            hashed_password = hash_password('password123')
+            cur.execute(
+                'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
+                ('Test User', 'test@example.com', hashed_password)
+            )
+            print("✅ Created default test user: test@example.com / password123")
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        if conn:
+            conn.close()
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -463,20 +495,23 @@ def free_access():
     """Free access redirect - creates a temporary user"""
     try:
         # Create a temporary free user
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return redirect(url_for('auth_page'))
+            
+        cur = conn.cursor()
         
         # Generate unique email for free user
         free_email = f"free_user_{int(time.time())}@angelsuccess.com"
         hashed_password = hash_password("free_access_2025")
         
-        c.execute(
-            'INSERT INTO users (full_name, email, password, plan) VALUES (?, ?, ?, ?)',
+        cur.execute(
+            'INSERT INTO users (full_name, email, password, plan) VALUES (%s, %s, %s, %s)',
             ("Free User", free_email, hashed_password, "free")
         )
-        user_id = c.lastrowid
+        user_id = cur.fetchone()['id']
         conn.commit()
+        cur.close()
         conn.close()
         
         token = generate_token(user_id)
@@ -505,17 +540,20 @@ def register():
         
         hashed_password = hash_password(password)
         
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'success': False, 'message': 'Database connection failed'}), 500
+            
+        cur = conn.cursor()
         
         try:
-            c.execute(
-                'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
+            cur.execute(
+                'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
                 (full_name, email, hashed_password)
             )
             conn.commit()
-            user_id = c.lastrowid
+            user_id = cur.fetchone()['id']
+            cur.close()
             conn.close()
             
             token = generate_token(user_id)
@@ -525,7 +563,8 @@ def register():
                 'message': 'Registration successful',
                 'token': token
             })
-        except sqlite3.IntegrityError:
+        except psycopg2.IntegrityError:
+            cur.close()
             conn.close()
             return jsonify({'success': False, 'message': 'Email already exists'}), 400
             
@@ -544,15 +583,18 @@ def login():
         if not all([email, password]):
             return jsonify({'success': False, 'message': 'Email and password are required'}), 400
         
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
-        c.execute('SELECT id, password, full_name FROM users WHERE email = ?', (email,))
-        user = c.fetchone()
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'success': False, 'message': 'Database connection failed'}), 500
+            
+        cur = conn.cursor()
+        cur.execute('SELECT id, password, full_name FROM users WHERE email = %s', (email,))
+        user = cur.fetchone()
+        cur.close()
         conn.close()
         
         if user:
-            user_id, hashed_password, full_name = user
+            user_id, hashed_password, full_name = user['id'], user['password'], user['full_name']
             
             if verify_password(password, hashed_password):
                 token = generate_token(user_id)
@@ -727,26 +769,30 @@ def system_status():
 def create_test_user():
     """Create a test user for debugging"""
     try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'success': False, 'message': 'Database connection failed'})
+            
+        cur = conn.cursor()
         
         # Check if test user already exists
-        c.execute('SELECT id FROM users WHERE email = ?', ('test@example.com',))
-        existing_user = c.fetchone()
+        cur.execute('SELECT id FROM users WHERE email = %s', ('test@example.com',))
+        existing_user = cur.fetchone()
         
         if existing_user:
+            cur.close()
             conn.close()
             return jsonify({'success': True, 'message': 'Test user already exists'})
         
         # Create test user
         hashed_password = hash_password('password123')
-        c.execute(
-            'INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)',
+        cur.execute(
+            'INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s)',
             ('Test User', 'test@example.com', hashed_password)
         )
         conn.commit()
-        user_id = c.lastrowid
+        user_id = cur.fetchone()['id']
+        cur.close()
         conn.close()
         
         return jsonify({
@@ -766,20 +812,23 @@ def create_test_user():
 def debug_users():
     """Debug route to see all users in database"""
     try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
-        c = conn.cursor()
-        c.execute('SELECT id, full_name, email, plan FROM users')
-        users = c.fetchall()
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'success': False, 'error': 'Database connection failed'})
+            
+        cur = conn.cursor()
+        cur.execute('SELECT id, full_name, email, plan FROM users')
+        users = cur.fetchall()
+        cur.close()
         conn.close()
         
         user_list = []
         for user in users:
             user_list.append({
-                'id': user[0],
-                'full_name': user[1],
-                'email': user[2],
-                'plan': user[3]
+                'id': user['id'],
+                'full_name': user['full_name'],
+                'email': user['email'],
+                'plan': user['plan']
             })
         
         return jsonify({'success': True, 'users': user_list})
